@@ -21,27 +21,44 @@ os.system('az account set -s ca9621d4-bfba-4a66-8f48-c4c7eaa0a21f')
 
 # Future work : 1) 엑셀에서 SLA 고려안 할 대상 행 삭제
 
-max_row = 500  # (수동으로 최대 row 값 입력해줄 것. ws.max_row 이 값을 제대로 못읽어옴.)
+max_row = 2000  # (수동으로 최대 row 값 입력해줄 것. ws.max_row 이 값을 제대로 못읽어옴.)
 current_row = 6  # 엑셀에서 데이터가 6행부터 시작
-# API 호출은 한 번만.
+# API 호출 한번만 하기 위해서 vm_data_obj 객체 생성.
 vm_data_obj = json.loads(os.popen(('az vm list --output json')).read())
-vm_cnt = 0
-
+vm_cnt = 0  # vm 넘버링. vm_data_obj[0], vm_data_obj[1]... 각각이 VM 한 대.
+vm_list = {}  # VM 이름 뒤에 -1, -2 등을 제거했을 때, 같은 이름의 VM이 있는지 확인하기 위해서.
+stripped_vm_name = []
+azset_cnt = 0
 while max_row > 0:
     if ws['D'+str(current_row)].value == ('Virtual machine' or 'SQL virtual machine'):
         rg_name = str(ws['E'+str(current_row)].value)  # 엑셀에서 rg, vm name 읽어옴
         vm_name = str(ws['C'+str(current_row)].value)
         region = str(ws['F'+str(current_row)].value)
-        region_check = []
-        av_zone = []
+
         print("vm name : "+vm_data_obj[vm_cnt]["name"])
-    # get disk info (Future work? : 매번 정보를 받아올 필요가 없다. 디스크 정보 시트를 따로 만들고 거기서 긁어오면 처리 시간 훨씬 단축 가능. 속도만 보자면.)
         print('vm_cnt : '+str(vm_cnt))
+
+        # 한 VM을 여러 AZ에 배포했을 때, 각 AZ에 name-1, name-2, name-3 으로 배포된다.
+        # [:-2]을 해서 같은 name의 VM이 있는지 확인하고, 있으면 [-2]의 값이 1,2,3 인지 확인한다.
+
+        stripped_vm_name = vm_data_obj[vm_cnt]["name"][:-2]
+        stripped_num = vm_data_obj[vm_cnt]["name"][-3]
+        print("stripped_vm_name : "+stripped_vm_name)
+        print("stripped_num : "+stripped_num)
+
+        try:
+            vm_list[stripped_vm_name] += 1
+        except KeyError:
+            vm_list[stripped_vm_name] = 1  # dict[key] 값이 없으면 강제로 넣어줌.
+
+        # 같은 name의 VM이 2개 이상 있으면, 기존 name과 stripped된 name +'-숫자'가 같은지 확인한다.
+        # ex. vm_list = {'stress-lin': 1, 'stress-li': 1, 'stress-linux': 3}
+
         total_data_disks = len(
             vm_data_obj[vm_cnt]["storageProfile"]["dataDisks"])
         print("total_data_disks : "+str(total_data_disks))
-        data_disk = []
         os_disk = []
+        data_disk = []
         data_disk_cnt = 0
 
         # data disk type check
@@ -51,7 +68,10 @@ while max_row > 0:
             data_disk_cnt += 1
         # os disk type check
         os_disk = vm_data_obj[vm_cnt]["storageProfile"]["osDisk"]["managedDisk"]["storageAccountType"]
-        print("os_disk : "+os_disk)
+        try:  # VM 꺼져있을 때를 대비한 error exception code
+            print("os_disk : "+os_disk)
+        except TypeError:
+            print("VM이 꺼져있습니다.")
         print('disk_data : '+str(data_disk))
 
         # Single vm instance
@@ -66,23 +86,29 @@ while max_row > 0:
             std_ssd_cnt += 1
         elif os_disk == 'Standard_LRS':
             std_hdd_cnt += 1
+        elif os_disk == None:
+            pass
+        else:
+            print("ERROR. ultradisk를 사용중입니다. 스크립트 개발자에게 반드시 알려주세요.")
 
         # data_disks type count
-        for idx, value in enumerate(data_disk[:-1]):
+        print('<data disk lists>')
+        for idx, value in enumerate(data_disk):
             print(str(idx)+' : '+value)
-            if value == 'Premium_LRS':  # or 'Ultradisk??_LRS???' :  # ultradisk 추가 요망
+            if value == 'Premium_LRS':
                 pre_ssd_cnt += 1
             elif value == 'StandardSSD_LRS':
                 std_ssd_cnt += 1
             elif value == 'Standard_LRS':
                 std_hdd_cnt += 1
+            # value == None을 확인할 필요가 없어. data_disk에 순회할 element가 없으면, for문 곧바로 break 됨.
             else:
-                print("ultradisk이거나 VM이 꺼져있습니다.\n")
+                print("ERROR. ultradisk를 사용중입니다. 스크립트 개발자에게 반드시 알려주세요.")
 
-        print('Premium ssd : '+str(pre_ssd_cnt))
-        print('standard ssd : '+str(std_ssd_cnt))
-        print('hdd : '+str(std_hdd_cnt))
-
+        print('Num of Premium Ssd : '+str(pre_ssd_cnt))
+        print('Num of Standard Ssd : '+str(std_ssd_cnt))
+        print('Num of Standrad Hdd : '+str(std_hdd_cnt))
+        print(vm_list)
         # Single VM instance's SLA check
         if std_hdd_cnt >= 1:
             ws['K'+str(current_row)].value = '99%'
@@ -103,5 +129,20 @@ while max_row > 0:
     current_row += 1
     max_row -= 1
 
+# 이거 이렇게 하면 안된다. 즉석에서 바로 비교해야될듯?
+print('vm_list = '+str(vm_list))
+for k, v in vm_list.items():
+    if v >= 2:
+        print('key = '+k+' , value = '+str(v))
+        for idx in range(v):
+            print(vm_data_obj[vm_cnt]["name"])
+            print(stripped_vm_name+'-'+str(idx+1))
+            if vm_data_obj[vm_cnt]["name"] == stripped_vm_name+'-'+str(idx+1):
+                azset_cnt += 1
+
+                print("azset_cnt = "+azset_cnt)
+
+    if azset_cnt == v:
+        print(vm_list[stripped_vm_name]+'는 AZset에 존재합니다.')
 
 wb.save("/Users/hojaelee/desktop/powershell/hanwha.xlsx")
